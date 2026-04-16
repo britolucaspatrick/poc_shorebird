@@ -1,94 +1,95 @@
 import 'package:flutter/foundation.dart';
-import 'package:shorebird_code_push/shorebird_code_push.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shorebird_code_push/shorebird_code_push.dart';
 
 class ShorebirdService {
   static final ShorebirdService _instance = ShorebirdService._internal();
   factory ShorebirdService() => _instance;
   ShorebirdService._internal() {
-    // Carrega logs salvos ao iniciar
-    _loadLogsFromStorage();
+    _loadLogs();
   }
 
   final ShorebirdUpdater _updater = ShorebirdUpdater();
   final ValueNotifier<List<String>> logsNotifier = ValueNotifier<List<String>>([]);
   final ValueNotifier<bool> isDownloadingNotifier = ValueNotifier<bool>(false);
 
-  // Adicione estes métodos à sua classe ShorebirdService
+  static const String _logKey = 'shorebird_logs_history';
+
+  // Getters para os serviços da versão 2.0.5
   bool get isAvailable => _updater.isAvailable;
 
-  Future<Patch?> getNextPatch() async {
-    return await _updater.readNextPatch();
-  }
-
-  static const String _storageKey = 'shorebird_logs_history';
-
-  // Carrega os logs do SharedPreferences
-  Future<void> _loadLogsFromStorage() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedLogs = prefs.getStringList(_storageKey);
-    if (savedLogs != null) {
-      logsNotifier.value = savedLogs;
+  Future<Patch?> getCurrentPatch() async {
+    try {
+      return await _updater.readCurrentPatch();
+    } catch (_) {
+      return null;
     }
   }
 
-  // Salva os logs no SharedPreferences
-  Future<void> _saveLogsToStorage() async {
-    final prefs = await SharedPreferences.getInstance();
-    // Limitamos a 100 logs para não inflar o armazenamento desnecessariamente
-    final logsToSave = logsNotifier.value.take(100).toList();
-    await prefs.setStringList(_storageKey, logsToSave);
+  Future<Patch?> getNextPatch() async {
+    try {
+      return await _updater.readNextPatch();
+    } catch (_) {
+      return null;
+    }
   }
 
-  // Limpa o histórico se necessário
-  Future<void> clearLogs() async {
+  // Lógica de Logs com Persistência
+  Future<void> _loadLogs() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_storageKey);
-    logsNotifier.value = [];
+    logsNotifier.value = prefs.getStringList(_logKey) ?? [];
   }
 
   void addLog(String message) {
     final timestamp = DateTime.now().toString().split('.').first.split(' ').last;
-    final newLog = '[$timestamp] $message';
-
-    logsNotifier.value = [newLog, ...logsNotifier.value];
-    debugPrint('[ShorebirdLog] $message');
-
-    // Persiste a mudança
-    _saveLogsToStorage();
+    final formatted = '[$timestamp] $message';
+    logsNotifier.value = [formatted, ...logsNotifier.value.take(99)];
+    _saveLogs();
+    debugPrint('[Shorebird] $message');
   }
 
-  Future<Patch?> getCurrentPatch() async {
-    return await _updater.readCurrentPatch();
+  Future<void> _saveLogs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_logKey, logsNotifier.value);
   }
 
+  Future<void> clearLogs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_logKey);
+    logsNotifier.value = [];
+  }
+
+  // Processo de Atualização
   Future<void> checkForUpdates() async {
-    addLog('Verificando atualizações...');
+    if (!isAvailable) {
+      addLog('❌ Shorebird não disponível neste build.');
+      return;
+    }
 
+    addLog('🔍 Verificando atualizações...');
     try {
       final status = await _updater.checkForUpdate();
       addLog('Status: ${status.name}');
 
       if (status == UpdateStatus.outdated) {
-        addLog('Novo patch encontrado! Baixando...');
+        addLog('📥 Novo patch encontrado! Baixando...');
         isDownloadingNotifier.value = true;
 
         await _updater.update();
 
-        final nextPatch = await _updater.readNextPatch();
-        if (nextPatch != null) {
-          addLog('✅ Patch ${nextPatch.number} baixado.');
-          addLog('🚀 PRONTO: Feche e abra o app para aplicar.');
+        final next = await getNextPatch();
+        if (next != null) {
+          addLog('✅ Patch Nº ${next.number} pronto! Reinicie o app.');
         } else {
-          addLog('⚠️ Download concluído.');
+          addLog('⚠️ Update concluído, mas patch não identificado.');
         }
       } else if (status == UpdateStatus.upToDate) {
-        addLog('O app já está atualizado.');
+        addLog('✨ O app já está atualizado.');
       }
     } on UpdateException catch (e) {
-      addLog('❌ Erro Shorebird: ${e.message}');
+      addLog('❌ Erro: ${e.message} (${e.reason})');
     } catch (e) {
-      addLog('❌ Erro: $e');
+      addLog('❌ Erro inesperado: $e');
     } finally {
       isDownloadingNotifier.value = false;
     }
